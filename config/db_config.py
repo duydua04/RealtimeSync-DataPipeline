@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import os
 from dataclasses import dataclass
 
+
 @dataclass
 class MySQLConfig:
     host: str
@@ -25,6 +26,7 @@ def get_database_config():
     }
 
     return config
+
 
 config = get_database_config()
 print(config)
