@@ -28,7 +28,13 @@ class MySQLConnect:
     def close(self):
         if self.cursor:
             self.cursor.close()
-        if self.connection() and self.connection().is_connected():
-            self.connection().close()
+        if self.connection and self.connection.is_connected():
+            self.connection.close()
             print("-----------MYSQL Close Connection----------")
 
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
