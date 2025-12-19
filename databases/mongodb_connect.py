@@ -15,7 +15,7 @@ class MongoDBConnect:
             self.client.admin.command('ping')
             self.db = self.client[self.database]
             print(f"------Connected successfully to MongoDB: {self.database}-------")
-        except ConnectionFailure as e
+        except ConnectionFailure as e:
             raise Exception(f"------Failed to connect MongoDB: {self.database}------")
 
     def close(self):
