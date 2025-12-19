@@ -22,3 +22,4 @@ def create_mysql_schema(connection, cursor):
         connection.roolback()
         raise Exception(f"-------Failed to CREATE MYSQL SCHEMA: ERROR : {e}--------") from e
 
+
