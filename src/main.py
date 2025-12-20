@@ -1,7 +1,8 @@
 from databases.mongodb_connect import MongoDBConnect
 from databases.mysql_connect import MySQLConnect
 from config.db_config import get_database_config
-from databases.schema_manager import create_mysql_schema
+from databases.schema_manager import create_mysql_schema, create_mongo_schema
+
 
 def main(config):
     config_mysql = config["mysql"]
@@ -11,7 +12,7 @@ def main(config):
 
     config_mongodb = config["mongodb"]
     with MongoDBConnect(config_mongodb.uri, config_mongodb.database) as mongo_client:
-        mongo_client.connect()
+        create_mongo_schema(mongo_client.connect())
 
 if __name__ == "__main__":
     config = get_database_config()
