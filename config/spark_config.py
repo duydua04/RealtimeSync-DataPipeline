@@ -1,5 +1,7 @@
 from typing import Optional, List, Dict
 from pyspark.sql import SparkSession
+from config.db_config import get_database_config
+
 
 class SparkConnect:
     def __init__(
@@ -68,3 +70,23 @@ class SparkConnect:
             self.spark.stop()
             print("-------Stop Spark Session--------")
 
+def get_spark_config():
+    db_configs = get_database_config()
+    spark_config = {
+        "mysql":{
+            # jdbc:mysql://localhost:3306/github_data
+            "jdbc" : "jdbc:mysql://{}:{}/{}".format(db_configs["mysql"].host,db_configs["mysql"].port,db_configs["mysql"].database),
+            "config" : {
+                "host" : db_configs["mysql"].host,
+                "port" : db_configs["mysql"].port,
+                "user" :db_configs["mysql"].user,
+                "password" : db_configs["mysql"].password,
+                "database" : db_configs["mysql"].database
+            }
+        },
+        "mongodb" : {
+            "database" : db_configs["mongodb"].database,
+            "uri" : db_configs["mongodb"].uri
+        },
+    }
+    return spark_config
