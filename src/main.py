@@ -12,7 +12,7 @@ def main(config):
 
     config_mongodb = config["mongodb"]
     with MongoDBConnect(config_mongodb.uri, config_mongodb.database) as mongo_client:
-        create_mongo_schema(mongo_client.connect())
+        create_mongo_schema(db=mongo_client.connect())
 
 if __name__ == "__main__":
     config = get_database_config()

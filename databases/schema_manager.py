@@ -1,4 +1,4 @@
-# Dung python tao databas   e voi mysql, mongodb
+# Dung python tao database voi mysql, mongodb
 from mysql.connector import Error
 
 
