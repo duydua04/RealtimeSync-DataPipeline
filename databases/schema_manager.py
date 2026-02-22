@@ -19,7 +19,7 @@ def create_mysql_schema(connection, cursor):
                 print(f'-------Executed Mysql Command: {cmd}--------')
             print("-----CREATED MYSQL SCHEMA------")
     except Error as e:
-        connection.roolback()
+        connection.rollback()
         raise Exception(f"-------Failed to CREATE MYSQL SCHEMA: ERROR : {e}--------") from e
 
 def create_mongo_schema(db):

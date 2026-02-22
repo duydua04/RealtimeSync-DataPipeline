@@ -1,209 +1,221 @@
 from pyspark.sql.types import *
-from pyspark.sql.functions import col, explode, to_timestamp, lit
+from pyspark.sql.functions import col, to_timestamp, lit, when
+
+# Import từ thư viện cấu hình và kết nối của bạn
 from config.spark_config import SparkConnect, get_spark_config
-from src.spark.spark_write_mysql import SparkWriteMySQL
+from src.spark.spark_write_mysql import SparkWriteMySQL  # Đổi lại đường dẫn import nếu bạn để file ở thư mục khác
+from src.spark.spark_write_mongodb import SparkWriteToMongodb
 
 
-def test_spark():
-    jars = ["mysql:mysql-connector-java:8.0.33", "org.mongodb.spark:mongo-spark-connector_2.12:10.5.0"]
+# ==============================================================================
+# 1. HÀM HELPER ĐỂ TRANSFORM DỮ LIỆU AN TOÀN
+# ==============================================================================
+def has_nested_field(df, path: str) -> bool:
+    parts = path.split(".")
+    curr_schema = df.schema
+    for p in parts:
+        if isinstance(curr_schema, StructType):
+            f = next((x for x in curr_schema.fields if x.name == p), None)
+            if f is None: return False
+            curr_schema = f.dataType
+        else:
+            return False
+    return True
+
+
+def safe_col(df, path: str, cast_type: DataType, alias_name: str):
+    if has_nested_field(df, path):
+        return col(path).cast(cast_type).alias(alias_name)
+    return lit(None).cast(cast_type).alias(alias_name)
+
+
+# ==============================================================================
+# 2. KHỞI TẠO SPARK VÀ CẤU HÌNH BẰNG MODULE `SparkConnect`
+# ==============================================================================
+def setup_spark_environment():
+    jars = [
+        "mysql:mysql-connector-java:8.0.33",
+        "org.mongodb.spark:mongo-spark-connector_2.12:10.5.0"
+    ]
+
+    # Lấy config MongoDB để gán vào spark_conf
+    db_config = get_spark_config()
+    mongo_uri = db_config["mongodb"]["uri"]
+
     spark_connect = SparkConnect(
-        app_name='spark_test',
+        app_name='Batch_Sync_MySQL_MongoDB',
         master_url='local[*]',
         executor_cores=3,
         executor_memory='2g',
         driver_memory='1g',
-        executor_nums=1,
+        num_executors=1,
         jar_packages=jars,
-        spark_conf={"spark.mongodb.write.connection.uri": "mongodb://admin:secret123@localhost:27019"},
+        spark_conf={"spark.mongodb.write.connection.uri": mongo_uri},
         log_level='ERROR'
     )
-    return spark_connect
-
-def run_etl_process():
-    spark_wrapper = test_spark()
-    spark = spark_wrapper.spark
-    mysql_config = get_spark_config()
-
-    jdbc_url = mysql_config['mysql']['jdbc']
-    db_properties = {
-        "user": mysql_config['mysql']['user'],
-        "password": mysql_config['mysql']['password'],
-        "driver": "com.mysql.cj.jdbc.Driver"
-    }
-    df_raw = spark.read.option("multiLine", "true").json("../data/small_json.json")
-
-    df = df_raw.withColumn("event_id_long", col("id").cast(LongType())) \
-        .withColumn("created_at_ts", to_timestamp(col("created_at")))
-
-    def has_nested_field(df, path: str) -> bool:
-        parts = path.split(".")
-        curr_schema = df.schema
-        for p in parts:
-            if isinstance(curr_schema, StructType):
-                f = next((x for x in curr_schema.fields if x.name == p), None)
-                if f is None: return False
-                curr_schema = f.dataType
-            else:
-                return False
-        return True
+    return spark_connect.spark
 
 
-    def extract_user(dataframe, prefix):
-        def safe_col(p, cast_type, alias=None):
-            alias = alias or p.split(".")[-1]
-            if has_nested_field(dataframe, p):
-                return col(p).cast(cast_type).alias(alias)
-            return lit(None).cast(cast_type).alias(alias)
+# ==============================================================================
+# 3. LUỒNG CHÍNH (ETL PROCESS)
+# ==============================================================================
+def run_batch_sync():
+    # Khởi tạo Spark và lấy toàn bộ config từ thư mục config/
+    spark = setup_spark_environment()
+    app_configs = get_spark_config()
 
-        return dataframe.select(
-            safe_col(f"{prefix}.id", LongType(), "user_id"),
-            safe_col(f"{prefix}.login", StringType(), "login"),
-            safe_col(f"{prefix}.avatar_url", StringType(), "avatar_url"),
-            safe_col(f"{prefix}.url", StringType(), "url"),
-            safe_col(f"{prefix}.html_url", StringType(), "html_url"),
-            safe_col(f"{prefix}.type", StringType(), "type"),
-            safe_col(f"{prefix}.site_admin", BooleanType(), "site_admin")
+    # Biến đường dẫn file JSON
+    JSON_FILE_PATH = "../data/small_json.json"
+
+    print(f"Đang đọc dữ liệu từ: {JSON_FILE_PATH}")
+    df_raw = spark.read.option("multiLine", "true").json(JSON_FILE_PATH)
+    df = df_raw.withColumn("created_at_ts", to_timestamp(col("created_at")))
+
+    print("Đang thực hiện Transform (Chuẩn hóa JSON thành 5 bảng)...")
+
+    # 1. BẢNG USERS
+    df_actor = df.select(
+        safe_col(df, "actor.id", LongType(), "user_id"),
+        safe_col(df, "actor.login", StringType(), "login"),
+        safe_col(df, "actor.avatar_url", StringType(), "avatar_url"),
+        safe_col(df, "actor.url", StringType(), "url"),
+        lit("User").alias("type"),
+        lit(False).alias("site_admin")
+    ).filter(col("user_id").isNotNull())
+
+    df_fork_owner = spark.createDataFrame([], df_actor.schema)
+    if has_nested_field(df, "payload.forkee.owner"):
+        df_fork_owner = df.select(
+            safe_col(df, "payload.forkee.owner.id", LongType(), "user_id"),
+            safe_col(df, "payload.forkee.owner.login", StringType(), "login"),
+            safe_col(df, "payload.forkee.owner.avatar_url", StringType(), "avatar_url"),
+            safe_col(df, "payload.forkee.owner.url", StringType(), "url"),
+            safe_col(df, "payload.forkee.owner.type", StringType(), "type"),
+            safe_col(df, "payload.forkee.owner.site_admin", BooleanType(), "site_admin")
         ).filter(col("user_id").isNotNull())
+    df_users = df_actor.unionByName(df_fork_owner, allowMissingColumns=True).dropDuplicates(["user_id"])
 
-    df_users = extract_user(df, "actor") \
-        .unionByName(extract_user(df, "payload.issue.user"), allowMissingColumns=True) \
-        .unionByName(extract_user(df, "payload.comment.user"), allowMissingColumns=True) \
-        .dropDuplicates(["user_id"])
+    # 2. BẢNG ORGS
+    df_orgs = spark.createDataFrame([], StructType([
+        StructField("org_id", LongType()), StructField("login", StringType()),
+        StructField("url", StringType()), StructField("avatar_url", StringType())
+    ]))
+    if has_nested_field(df, "org"):
+        df_orgs = df.select(
+            safe_col(df, "org.id", LongType(), "org_id"),
+            safe_col(df, "org.login", StringType(), "login"),
+            safe_col(df, "org.url", StringType(), "url"),
+            safe_col(df, "org.avatar_url", StringType(), "avatar_url")
+        ).filter(col("org_id").isNotNull()).dropDuplicates(["org_id"])
 
-    df_repos = df.select(
-        col("repo.id").cast(LongType()).alias("repo_id"),
-        col("repo.name").alias("name"),
-        col("repo.url").alias("url")
-    ).dropDuplicates(["repo_id"])
+    # 3. BẢNG REPOS
+    df_repo_base = df.select(
+        safe_col(df, "repo.id", LongType(), "repo_id"),
+        safe_col(df, "repo.name", StringType(), "name"),
+        lit(None).cast(StringType()).alias("full_name"),
+        safe_col(df, "repo.url", StringType(), "url"),
+        lit(None).cast(StringType()).alias("html_url"),
+        lit(None).cast(StringType()).alias("description"),
+        lit(None).cast(BooleanType()).alias("is_private"),
+        lit(None).cast(BooleanType()).alias("is_fork"),
+        lit(None).cast(StringType()).alias("homepage"),
+        lit(None).cast(IntegerType()).alias("size"),
+        lit(None).cast(StringType()).alias("language"),
+        lit(None).cast(IntegerType()).alias("forks_count"),
+        lit(None).cast(IntegerType()).alias("stargazers_count"),
+        lit(None).cast(IntegerType()).alias("watchers_count"),
+        lit(None).cast(StringType()).alias("default_branch"),
+        lit(None).cast(TimestampType()).alias("created_at"),
+        lit(None).cast(TimestampType()).alias("updated_at"),
+        lit(None).cast(TimestampType()).alias("pushed_at")
+    ).filter(col("repo_id").isNotNull())
 
-    if has_nested_field(df, "payload.issue"):
-        df_issues = df.select(
-            col("payload.issue.id").cast(LongType()).alias("issue_id"),
-            col("repo.id").cast(LongType()).alias("repo_id"),
-            col("payload.issue.user.id").cast(LongType()).alias("user_id"),
-            col("payload.issue.number").alias("number"),
-            col("payload.issue.title").alias("title"),
-            col("payload.issue.body").alias("body"),
-            col("payload.issue.state").alias("state"),
-            col("payload.issue.locked").cast(BooleanType()).alias("locked"),
+    df_repo_forkee = spark.createDataFrame([], df_repo_base.schema)
+    if has_nested_field(df, "payload.forkee"):
+        df_repo_forkee = df.select(
+            safe_col(df, "payload.forkee.id", LongType(), "repo_id"),
+            safe_col(df, "payload.forkee.name", StringType(), "name"),
+            safe_col(df, "payload.forkee.full_name", StringType(), "full_name"),
+            safe_col(df, "payload.forkee.url", StringType(), "url"),
+            safe_col(df, "payload.forkee.html_url", StringType(), "html_url"),
+            safe_col(df, "payload.forkee.description", StringType(), "description"),
+            safe_col(df, "payload.forkee.private", BooleanType(), "is_private"),
+            safe_col(df, "payload.forkee.fork", BooleanType(), "is_fork"),
+            safe_col(df, "payload.forkee.homepage", StringType(), "homepage"),
+            safe_col(df, "payload.forkee.size", IntegerType(), "size"),
+            safe_col(df, "payload.forkee.language", StringType(), "language"),
+            safe_col(df, "payload.forkee.forks_count", IntegerType(), "forks_count"),
+            safe_col(df, "payload.forkee.stargazers_count", IntegerType(), "stargazers_count"),
+            safe_col(df, "payload.forkee.watchers_count", IntegerType(), "watchers_count"),
+            safe_col(df, "payload.forkee.default_branch", StringType(), "default_branch"),
+            to_timestamp(col("payload.forkee.created_at")).alias("created_at"),
+            to_timestamp(col("payload.forkee.updated_at")).alias("updated_at"),
+            to_timestamp(col("payload.forkee.pushed_at")).alias("pushed_at")
+        ).filter(col("repo_id").isNotNull())
+    df_repos = df_repo_forkee.unionByName(df_repo_base).dropDuplicates(["repo_id"])
 
-            col("payload.issue.comments").alias("comments_count"),
-            to_timestamp(col("payload.issue.created_at")).alias("created_at"),
-            to_timestamp(col("payload.issue.updated_at")).alias("updated_at"),
-            to_timestamp(col("payload.issue.closed_at")).alias("closed_at")
-        ).filter(col("issue_id").isNotNull()).dropDuplicates(["issue_id"])
-    else:
-        empty_schema = StructType() \
-            .add("issue_id", LongType()).add("repo_id", LongType()).add("user_id", LongType()) \
-            .add("number", LongType()).add("title", StringType()).add("body", StringType()) \
-            .add("state", StringType()).add("locked", BooleanType()).add("comments_count", LongType()) \
-            .add("created_at", StringType()).add("updated_at", StringType()).add("closed_at", StringType())
-        df_issues = spark.createDataFrame([], empty_schema)
-
-    if has_nested_field(df, "payload.comment"):
-        df_comments = df.select(
-            col("payload.comment.id").cast(LongType()).alias("comment_id"),
-            col("payload.issue.id").cast(LongType()).alias("issue_id"),
-            col("payload.comment.user.id").cast(LongType()).alias("user_id"),
-            col("payload.comment.body").alias("body"),
-            to_timestamp(col("payload.comment.created_at")).alias("created_at"),
-            to_timestamp(col("payload.comment.updated_at")).alias("updated_at")
-        ).filter(col("comment_id").isNotNull()).dropDuplicates(["comment_id"])
-    else:
-        df_comments = spark.createDataFrame([], StructType([]))
-
+    # 4. BẢNG EVENTS
     df_events = df.select(
-        col("id").cast(LongType()).alias("event_id"),
-        col("type").alias("event_type"),
-        col("actor.id").cast(LongType()).alias("actor_id"),
-        col("repo.id").cast(LongType()).alias("repo_id"),
-        col("public").cast(BooleanType()).alias("public"),
-
-        col("created_at_ts").alias("created_at")
+        safe_col(df, "id", StringType(), "event_id"),
+        safe_col(df, "type", StringType(), "event_type"),
+        safe_col(df, "actor.id", LongType(), "actor_id"),
+        safe_col(df, "repo.id", LongType(), "repo_id"),
+        safe_col(df, "org.id", LongType(), "org_id"),
+        safe_col(df, "public", BooleanType(), "is_public"),
+        col("created_at_ts").alias("created_at"),
+        when(col("type") == "ForkEvent", safe_col(df, "payload.forkee.id", LongType(), None))
+        .otherwise(lit(None)).alias("forkee_repo_id")
     ).dropDuplicates(["event_id"])
 
-    df_payloads = df.select(
-        col("id").cast(LongType()).alias("event_id"),
-        col("payload.action").alias("action"),
-        col("payload.issue.id").cast(LongType()).alias("issue_id"),
-        col("payload.comment.id").cast(LongType()).alias("comment_id")
-    ).filter(col("event_id").isNotNull()).dropDuplicates(["event_id"])
+    # 5. BẢNG REPO_OWNERSHIP
+    df_ownership_org = df.select(
+        safe_col(df, "repo.id", LongType(), "repo_id"),
+        lit(None).cast(LongType()).alias("owner_user_id"),
+        safe_col(df, "org.id", LongType(), "owner_org_id")
+    ).filter(col("repo_id").isNotNull() & col("owner_org_id").isNotNull())
 
-    df_labels = spark.createDataFrame([], StructType([]))
+    df_ownership_user = spark.createDataFrame([], df_ownership_org.schema)
+    if has_nested_field(df, "payload.forkee"):
+        df_ownership_user = df.select(
+            safe_col(df, "payload.forkee.id", LongType(), "repo_id"),
+            safe_col(df, "payload.forkee.owner.id", LongType(), "owner_user_id"),
+            lit(None).cast(LongType()).alias("owner_org_id")
+        ).filter(col("repo_id").isNotNull() & col("owner_user_id").isNotNull())
+    df_repo_ownership = df_ownership_org.unionByName(df_ownership_user).dropDuplicates(["repo_id"])
 
-    if has_nested_field(df, "payload.issue.labels"):
-        df_exploded = df.select(
-            col("payload.issue.id").cast(LongType()).alias("issue_id"),
-            explode(col("payload.issue.labels")).alias("lbl")
-        ).filter(col("issue_id").isNotNull())
+    # --- LOAD: GHI VÀO CƠ SỞ DỮ LIỆU BẰNG CLASS IMPORT ---
 
-        df_labels = df_exploded.select(
-            col("lbl.name").alias("name"),
-            col("lbl.color").alias("color"),
-            col("lbl.url").alias("url")
-        ).dropDuplicates(["name"])
+    # Chuẩn bị Config cho Class MySQL
+    mysql_writer = SparkWriteMySQL(spark, app_configs["mysql"])
+    jdbc_url = app_configs["mysql"]["jdbc"]
+    mysql_properties = app_configs["mysql"]  # Class của bạn yêu cầu tham số config nguyên cục
 
-    writer = SparkWriteMySQL(spark, mysql_config)
+    # Chuẩn bị Config cho Class MongoDB
+    mongo_writer = SparkWriteToMongodb(spark, app_configs["mongodb"])
+    mongo_uri = app_configs["mongodb"]["uri"]
+    mongo_db_name = app_configs["mongodb"]["database"]
 
-    # 1. Ghi Users
-    if df_users.count() > 0:
-        print("Đang ghi Users...")
-        writer.sparkwritetomysql(df_users, db_properties['user'], db_properties['password'], jdbc_url, "users",
-                                 'append')
+    print("\n--- BẮT ĐẦU GHI VÀO MYSQL (Tuân thủ thứ tự Khóa ngoại) ---")
+    mysql_writer.spark_write_mysql(df_users, mysql_properties, jdbc_url, "USERS", 'append')
+    mysql_writer.spark_write_mysql(df_orgs, mysql_properties, jdbc_url, "ORGS", 'append')
+    mysql_writer.spark_write_mysql(df_repos, mysql_properties, jdbc_url, "REPOS", 'append')
+    mysql_writer.spark_write_mysql(df_events, mysql_properties, jdbc_url, "EVENTS", 'append')
+    mysql_writer.spark_write_mysql(df_repo_ownership, mysql_properties, jdbc_url, "REPO_OWNERSHIP", 'append')
 
-    # 2. Ghi Repositories
-    if df_repos.count() > 0:
-        print("Đang ghi Repositories...")
-        writer.sparkwritetomysql(df_repos, db_properties['user'], db_properties['password'], jdbc_url, "repositories",
-                                 'append')
+    print("\n--- BẮT ĐẦU GHI VÀO MONGODB ---")
+    mongo_writer.sparkwritetomongodb(df_users, mongo_uri, mongo_db_name, "Users", 'append')
+    mongo_writer.sparkwritetomongodb(df_orgs, mongo_uri, mongo_db_name, "Orgs", 'append')
+    mongo_writer.sparkwritetomongodb(df_repos, mongo_uri, mongo_db_name, "Repos", 'append')
+    mongo_writer.sparkwritetomongodb(df_events, mongo_uri, mongo_db_name, "Events", 'append')
 
-    # 3. Ghi Labels (Để sinh ID tự tăng trong MySQL)
-    if df_labels.count() > 0:
-        print("Đang ghi Labels...")
-        writer.sparkwritetomysql(df_labels, db_properties['user'], db_properties['password'], jdbc_url, "labels",
-                                 'append')
+    # Ghi toàn bộ Raw JSON vào Data Lake bên Mongo
+    mongo_writer.sparkwritetomongodb(df_raw, mongo_uri, mongo_db_name, "Raw_Events_Log", 'append')
 
-    # 4. Ghi Issues (Cần Users và Repos có trước)
-    if df_issues.count() > 0:
-        print("Đang ghi Issues...")
-        # Lỗi cũ của bạn nằm ở đây, giờ đã fix bằng .alias("locked") ở trên
-        writer.sparkwritetomysql(df_issues, db_properties['user'], db_properties['password'], jdbc_url, "issues",
-                                 'append')
+    print("\n================ ĐỒNG BỘ DỮ LIỆU HOÀN TẤT ================")
 
-    # 5. Ghi Issue_Labels (Logic phức tạp: Phải lấy ID từ MySQL ra)
-    if df_labels.count() > 0 and has_nested_field(df, "payload.issue.labels"):
-        print("Đang xử lý Issue_Labels...")
-        # Đọc lại bảng labels từ MySQL để lấy label_id (vì nó là SERIAL/AUTO_INCREMENT)
-        df_mysql_labels = spark.read.jdbc(url=jdbc_url, table="labels", properties=db_properties)
+    # Đóng session
+    spark.stop()
 
-        # Join tên label từ file json với bảng label trong db để lấy ID
-        df_issue_labels = df_exploded.select(
-            col("issue_id"),
-            col("lbl.name").alias("name")
-        ).join(df_mysql_labels.select("label_id", "name"), on="name") \
-            .select("issue_id", "label_id") \
-            .dropDuplicates()
 
-        if df_issue_labels.count() > 0:
-            writer.sparkwritetomysql(df_issue_labels, db_properties['user'], db_properties['password'], jdbc_url,
-                                     "issue_labels", 'append')
-
-    # 6. Ghi Comments
-    if df_comments.count() > 0:
-        print("Đang ghi Comments...")
-        writer.sparkwritetomysql(df_comments, db_properties['user'], db_properties['password'], jdbc_url, "comments",
-                                 'append')
-
-    # 7. Ghi Events
-    if df_events.count() > 0:
-        print("Đang ghi Events...")
-        writer.sparkwritetomysql(df_events, db_properties['user'], db_properties['password'], jdbc_url, "events",
-                                 'append')
-
-    # 8. Ghi Payloads
-    if df_payloads.count() > 0:
-        print("Đang ghi Payloads...")
-        writer.sparkwritetomysql(df_payloads, db_properties['user'], db_properties['password'], jdbc_url, "payloads",
-                                 'append')
-
-    print("--- Hoàn thành toàn bộ quy trình ETL ---")
+if __name__ == "__main__":
+    run_batch_sync()
