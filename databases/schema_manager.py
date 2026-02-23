@@ -1,4 +1,3 @@
-# Dung python tao database voi mysql, mongodb
 from mysql.connector import Error
 
 
@@ -27,18 +26,15 @@ def create_mongo_schema(db):
     db.create_collection("users", validator={
         "$jsonSchema": {
             "bsonType": "object",
-            "required": ["_id", "login"],  # _id sẽ là user_id
+            "required": ["_id", "login"],
             "properties": {
-                "_id": {"bsonType": "int", "description": "user_id từ GitHub"},
-                "login": {
-                    "bsonType": "string",
-
-                },
+                "_id": {"bsonType": ["int", "long"], "description": "user_id từ GitHub"},
+                "login": {"bsonType": "string"},
                 "avatar_url": {"bsonType": ["string", "null"]},
                 "url": {"bsonType": ["string", "null"]},
-                "type": {"bsonType": "string", "enum": ["User", "Organization"]},
-                "site_admin": {"bsonType": "bool"},
-                "created_at": {"bsonType": "date"}
+                "type": {"bsonType": ["string", "null"]},
+                "site_admin": {"bsonType": ["bool", "null"]},
+                "created_at": {"bsonType": ["date", "string", "null"]}
             }
         }
     })
@@ -47,13 +43,13 @@ def create_mongo_schema(db):
     db.create_collection("orgs", validator={
         "$jsonSchema": {
             "bsonType": "object",
-            "required": ["_id", "login"],  # _id sẽ là org_id
+            "required": ["_id"],
             "properties": {
-                "_id": {"bsonType": "long", "description": "org_id từ GitHub"},
-                "login": {"bsonType": "string"},
-                "url": {"bsonType": "string"},
-                "avatar_url": {"bsonType": "string"},
-                "created_at": {"bsonType": "date"}
+                "_id": {"bsonType": ["long", "int"], "description": "org_id từ GitHub"},
+                "login": {"bsonType": ["string", "null"]},
+                "url": {"bsonType": ["string", "null"]},
+                "avatar_url": {"bsonType": ["string", "null"]},
+                "created_at": {"bsonType": ["date", "string", "null"]}
             }
         }
     })
@@ -62,43 +58,41 @@ def create_mongo_schema(db):
     db.create_collection("repos", validator={
         "$jsonSchema": {
             "bsonType": "object",
-            "required": ["_id", "name", "full_name", "owner"],
+            "required": ["_id"],
             "properties": {
-                "_id": {"bsonType": "long", "description": "repo_id từ GitHub"},
-                "name": {"bsonType": "string"},
-                "full_name": {"bsonType": "string"},
-                "url": {"bsonType": "string"},
-                "html_url": {"bsonType": "string"},
-                "description": {"bsonType": ["string", "null"]},  # Có thể null
-                "is_private": {"bsonType": "bool"},
-                "is_fork": {"bsonType": "bool"},
-                "stats": {  # Gom nhóm các chỉ số thống kê cho gọn
-                    "bsonType": "object",
+                "_id": {"bsonType": ["long", "int"], "description": "repo_id từ GitHub"},
+                "name": {"bsonType": ["string", "null"]},
+                "full_name": {"bsonType": ["string", "null"]},
+                "url": {"bsonType": ["string", "null"]},
+                "html_url": {"bsonType": ["string", "null"]},
+                "description": {"bsonType": ["string", "null"]},
+                "is_private": {"bsonType": ["bool", "null"]},
+                "is_fork": {"bsonType": ["bool", "null"]},
+                "stats": {
+                    "bsonType": ["object", "null"],
                     "properties": {
-                        "size": {"bsonType": "int"},
-                        "forks_count": {"bsonType": "int"},
-                        "stargazers_count": {"bsonType": "int"},
-                        "watchers_count": {"bsonType": "int"}
+                        "size": {"bsonType": ["int", "long", "null"]},
+                        "forks_count": {"bsonType": ["int", "long", "null"]},
+                        "stargazers_count": {"bsonType": ["int", "long", "null"]},
+                        "watchers_count": {"bsonType": ["int", "long", "null"]}
                     }
                 },
                 "language": {"bsonType": ["string", "null"]},
-                "default_branch": {"bsonType": "string"},
-                "dates": {  # Gom nhóm ngày tháng
-                    "bsonType": "object",
+                "default_branch": {"bsonType": ["string", "null"]},
+                "dates": {
+                    "bsonType": ["object", "null"],
                     "properties": {
-                        "created_at": {"bsonType": "date"},
-                        "updated_at": {"bsonType": "date"},
-                        "pushed_at": {"bsonType": "date"}
+                        "created_at": {"bsonType": ["date", "string", "null"]},
+                        "updated_at": {"bsonType": ["date", "string", "null"]},
+                        "pushed_at": {"bsonType": ["date", "string", "null"]}
                     }
                 },
-                # --- NHÚNG (Embedding) thay thế cho bảng REPO_OWNERSHIP ---
                 "owner": {
-                    "bsonType": "object",
-                    "required": ["id", "login", "type"],
+                    "bsonType": ["object", "null"],
                     "properties": {
-                        "id": {"bsonType": "long", "description": "user_id hoặc org_id"},
-                        "login": {"bsonType": "string"},
-                        "type": {"bsonType": "string", "enum": ["User", "Organization"]}
+                        "id": {"bsonType": ["long", "int", "null"]},
+                        "login": {"bsonType": ["string", "null"]},
+                        "type": {"bsonType": ["string", "null"]}
                     }
                 }
             }
@@ -109,60 +103,48 @@ def create_mongo_schema(db):
     db.create_collection("events", validator={
         "$jsonSchema": {
             "bsonType": "object",
-            "required": ["_id", "type", "actor", "repo", "created_at"],
+            "required": ["_id", "type"],
             "properties": {
                 "_id": {"bsonType": "string", "description": "event_id"},
-                "type": {"bsonType": "string"},  # ForkEvent, PushEvent, v.v.
-                "is_public": {"bsonType": "bool"},
-                "created_at": {"bsonType": "date"},
-
-                # Actor: Nhúng một phần thông tin User
+                "type": {"bsonType": ["string", "null"]},
+                "is_public": {"bsonType": ["bool", "null"]},
+                "created_at": {"bsonType": ["date", "string", "null"]},
                 "actor": {
-                    "bsonType": "object",
-                    "required": ["id", "login"],
+                    "bsonType": ["object", "null"],
                     "properties": {
-                        "id": {"bsonType": "long"},
-                        "login": {"bsonType": "string"},
-                        "avatar_url": {"bsonType": "string"}
+                        "id": {"bsonType": ["long", "int", "null"]},
+                        "login": {"bsonType": ["string", "null"]},
+                        "avatar_url": {"bsonType": ["string", "null"]}
                     }
                 },
-
-                # Repo: Nhúng một phần thông tin Repo gốc
                 "repo": {
-                    "bsonType": "object",
-                    "required": ["id", "name", "url"],
+                    "bsonType": ["object", "null"],
                     "properties": {
-                        "id": {"bsonType": "long"},
-                        "name": {"bsonType": "string"},  # format: owner/repo
-                        "url": {"bsonType": "string"}
+                        "id": {"bsonType": ["long", "int", "null"]},
+                        "name": {"bsonType": ["string", "null"]},
+                        "url": {"bsonType": ["string", "null"]}
                     }
                 },
-
-                # Org: (Optional)
                 "org": {
                     "bsonType": ["object", "null"],
                     "properties": {
-                        "id": {"bsonType": "long"},
-                        "login": {"bsonType": "string"}
+                        "id": {"bsonType": ["long", "int", "null"]},
+                        "login": {"bsonType": ["string", "null"]}
                     }
                 },
-
-                # PAYLOAD: Chứa thông tin linh động tùy loại event (Thay thế cột forkee_repo_id)
                 "payload": {
-                    "bsonType": "object",
+                    "bsonType": ["object", "null"],
                     "properties": {
-                        # Nếu là ForkEvent, thông tin forkee sẽ nằm ở đây
                         "forkee": {
-                            "bsonType": "object",
+                            "bsonType": ["object", "null"],
                             "properties": {
-                                "id": {"bsonType": "long"},
-                                "name": {"bsonType": "string"},
-                                "public": {"bsonType": "bool"}
+                                "id": {"bsonType": ["long", "int", "null"]},
+                                "name": {"bsonType": ["string", "null"]},
+                                "public": {"bsonType": ["bool", "null"]}
                             }
                         },
-                        # Các field khác cho PushEvent, PullRequestEvent... sẽ nằm ở đây
-                        "ref": {"bsonType": "string"},
-                        "head": {"bsonType": "string"}
+                        "ref": {"bsonType": ["string", "null"]},
+                        "head": {"bsonType": ["string", "null"]}
                     }
                 }
             }
@@ -170,14 +152,8 @@ def create_mongo_schema(db):
     })
 
     db.users.create_index("login", unique=True)
-
-    # Index cho Repos
-    db.repos.create_index("full_name", unique=True)
-    db.repos.create_index("owner.id")  # Tìm repo theo owner nhanh hơn
-
-    # Index cho Events
-    db.events.create_index("actor.id")  # Tìm event của 1 người
-    db.events.create_index("repo.id")  # Tìm event của 1 repo
+    db.repos.create_index("full_name")
+    db.repos.create_index("owner.id")
+    db.events.create_index("actor.id")
+    db.events.create_index("repo.id")
     print("----------_CREATED MONGODB SCHEMA-------------")
-
-

@@ -9,7 +9,7 @@ class SparkWriteToMongodb:
     def sparkwritetomongodb(self, df: DataFrame, uri: str, database: str, collection: str, mode: str):
             df.write.format("mongodb") \
             .option("collection", collection) \
-            .option("uri", uri) \
+            .option("connection.uri", uri) \
             .option("database", database) \
             .mode(mode) \
             .save()
