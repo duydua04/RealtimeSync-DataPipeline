@@ -54,9 +54,9 @@ def main():
                 while True:
                     data, max_timestamp = get_data_trigger(mysql_client, last_timestamp)
                     if data:
-                        print(f"[{max_timestamp}] ⚡ Tìm thấy {len(data)} bản ghi mới. Đang đẩy lên Kafka...")
+                        print(f"[{max_timestamp}] Tìm thấy {len(data)} bản ghi mới. Đang đẩy lên Kafka...")
                         for record in data:
-                            producer.send("top", record)
+                            producer.send("hoangduy", record)
 
                         producer.flush()
                         last_timestamp = max_timestamp
