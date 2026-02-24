@@ -197,3 +197,61 @@ def validate_mongodb_schema(db):
         raise ValueError("----------MongoDB: Test data (_id=1) insert incomplete!----------")
 
     print("--------------MongoDB: Validated Schema & test data!--------")
+
+
+def create_mysql_triggers(connection, cursor):
+    """Hàm thông minh tự động đọc file trigger.sql và thực thi"""
+    # Đảm bảo đường dẫn này trỏ đúng tới file trigger.sql của bạn
+    trigger_file = "/home/hoangduy/PycharmProjects/DataPipeline/src/sql/trigger.sql"
+
+    try:
+        print(f"\n🚀 BẮT ĐẦU TẠO CDC LOG TABLES & TRIGGERS TỪ FILE SQL...")
+
+        # Dọn dẹp đường truyền trước khi bắt đầu
+        while connection.unread_result:
+            cursor.fetchall()
+
+        with open(trigger_file, 'r') as f:
+            sql_script = f.read()
+
+        # TÁCH FILE THÀNH 2 PHẦN DỰA TRÊN TỪ KHÓA "DELIMITER //"
+        parts = sql_script.split("DELIMITER //")
+
+        commands = []
+
+        # PHẦN 1: TẠO BẢNG (Trước DELIMITER //) -> Cắt bằng dấu chấm phẩy (;)
+        if len(parts) > 0:
+            table_queries = [cmd.strip() for cmd in parts[0].split(";") if cmd.strip()]
+            commands.extend(table_queries)
+
+        # PHẦN 2: TẠO TRIGGER (Sau DELIMITER //) -> Cắt bằng dấu (//)
+        if len(parts) > 1:
+            # Xóa bỏ nốt từ khóa DELIMITER ; ở cuối file
+            trigger_part = parts[1].replace("DELIMITER ;", "")
+            trigger_queries = [cmd.strip() for cmd in trigger_part.split("//") if cmd.strip()]
+            commands.extend(trigger_queries)
+
+        # THỰC THI TỪNG LỆNH ĐÃ ĐƯỢC CẮT CHUẨN XÁC
+        for i, cmd in enumerate(commands):
+            if not cmd:
+                continue
+            try:
+                cursor.execute(cmd)
+
+                # Bắt buộc phải dọn sạch bộ nhớ đệm sau mỗi lệnh (Chống lỗi Out of sync)
+                while connection.unread_result:
+                    cursor.fetchall()
+
+                print(f"✅ Executed command {i + 1}/{len(commands)}")
+            except Error as cmd_err:
+                # Bỏ qua lỗi nếu bảng hoặc trigger đã tồn tại từ trước
+                if "already exists" not in str(cmd_err).lower():
+                    print(f"❌ Lỗi Cú Pháp tại lệnh số {i + 1}:\n{cmd[:150]}...")
+                    raise cmd_err
+
+        connection.commit()
+        print("🎉 ----- TẤT CẢ TRIGGERS VÀ LOG TABLES ĐÃ SẴN SÀNG! ------")
+
+    except Exception as e:
+        connection.rollback()
+        raise Exception(f"❌ Lỗi khi đọc file trigger.sql: {e}") from e
