@@ -157,3 +157,43 @@ def create_mongo_schema(db):
     db.events.create_index("actor.id")
     db.events.create_index("repo.id")
     print("----------_CREATED MONGODB SCHEMA-------------")
+
+def validate_mysql_schema(cursor):
+    cursor.execute("SHOW TABLES")
+    table_list = cursor.fetchall()
+    tables = [row[0] for row in table_list]
+
+    required_tables = ["users", "repos", "orgs", "events", "repo_ownership"]
+
+    for table in required_tables:
+        if table not in tables:
+            raise ValueError(f"========= Table '{table}' isn't exist =============")
+
+    print("-----------MySQL: TABLES IS CREATED FULLY.--------")
+
+    cursor.execute("SELECT * FROM users WHERE user_id = 1")
+    user = cursor.fetchall()
+    if not user:
+        raise ValueError("---------------MySQL: Test data (user_id=1) has been inserted complete!--------")
+
+    print("-----------MySQL: Validated Schema & data test --------")
+
+
+def validate_mongodb_schema(db):
+    """Kiểm tra xem các collections trong MongoDB đã được tạo thành công chưa và có data không."""
+    collections = db.list_collection_names()
+
+    required_collections = ["users", "repos", "orgs", "events"]
+
+    for coll in required_collections:
+        if coll not in collections:
+            raise ValueError(f"------MongoDB: Collection '{coll}' doesn't exist!-----")
+
+    print("-----------MongoDB: Collections is created complete.--------")
+
+    user = db.users.find_one({"_id": 1})
+
+    if not user:
+        raise ValueError("----------MongoDB: Test data (_id=1) insert incomplete!----------")
+
+    print("--------------MongoDB: Validated Schema & test data!--------")
