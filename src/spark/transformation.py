@@ -3,10 +3,9 @@ from pyspark.sql.types import *
 from config.spark_config import SparkConnect, get_spark_config
 from src.spark.spark_write_mysql import SparkWriteMySQL
 from src.spark.spark_write_mongodb import SparkWriteToMongodb
-
+from databases.mysql_connect import MySQLConnect
 
 def main():
-    # 1. KHỞI TẠO SPARK
     jars = [
         "mysql:mysql-connector-java:8.0.33",
         "org.mongodb.spark:mongo-spark-connector_2.12:10.5.0"
@@ -203,6 +202,38 @@ def main():
     mongo_writer.sparkwritetomongodb(df_mongo_events, mongo_uri, mongo_db, "events", "append")
 
     print("---- WRITE COMPLETE ----")
+
+    mysql_cfg = configs["mysql"]["config"]
+    with MySQLConnect(
+            host=mysql_cfg["host"],
+            port=mysql_cfg["port"],
+            user=mysql_cfg["user"],
+            password=mysql_cfg["password"]
+    ) as mysql_client:
+
+        cursor = mysql_client.cursor
+
+        db_name = mysql_cfg["database"]
+        cursor.execute(f"USE {db_name}")
+
+        log_tables = [
+            "USERS_LOG_AFTER",
+            "REPOS_LOG_AFTER",
+            "ORGS_LOG_AFTER",
+            "EVENTS_LOG_AFTER",
+            "REPO_OWNERSHIP_LOG_AFTER"
+        ]
+
+        for table in log_tables:
+            try:
+                cursor.execute(f"TRUNCATE TABLE {table}")
+                print(f" Cleaned: {table}")
+            except Exception as e:
+                print(f"Can not clean {table}. Error: {e}")
+
+        mysql_client.connection.commit()
+        print(f"DONE: {db_name}")
+
     spark_conn.stop()
 
 

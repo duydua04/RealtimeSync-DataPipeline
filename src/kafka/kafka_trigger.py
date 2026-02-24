@@ -3,19 +3,30 @@ from databases.mysql_connect import MySQLConnect
 from config.db_config import get_database_config
 import json
 import time
+import hashlib
 from datetime import datetime
 
+TABLE_CONFIGS = {
+    "users": ["user_id", "login", "avatar_url", "url", "type", "site_admin", "created_at", "status", "log_timestamp"],
+    "repos": ["repo_id", "name", "full_name", "url", "html_url", "description", "is_private", "is_fork", "homepage",
+              "size", "language", "forks_count", "stargazers_count", "watchers_count", "default_branch", "created_at",
+              "updated_at", "pushed_at", "status", "log_timestamp"],
+    "orgs": ["org_id", "login", "url", "avatar_url", "created_at", "status", "log_timestamp"],
+    "events": ["event_id", "event_type", "actor_id", "repo_id", "org_id", "is_public", "created_at", "forkee_repo_id",
+               "status", "log_timestamp"],
+    "repo_ownership": ["repo_id", "owner_user_id", "owner_org_id", "status", "log_timestamp"]
+}
 
-def get_data_trigger(mysql_client, last_timestamp):
+
+def get_data_trigger(mysql_client, table_name, last_timestamp):
     connection, cursor = mysql_client.connection, mysql_client.cursor
-    database = "github_data"
-    connection.database = database
+    connection.database = "github_data"
 
-    base_query = (
-        "SELECT user_id, login, gravatar_id, url, avatar_url, status, "
-        "log_timestamp "
-        "FROM USER_LOG_AFTER"
-    )
+    columns = TABLE_CONFIGS[table_name]
+    col_str = ", ".join(columns)
+    log_table_name = f"{table_name.upper()}_LOG_AFTER"
+
+    base_query = f"SELECT {col_str} FROM {log_table_name}"
 
     if last_timestamp is not None and last_timestamp != "":
         query = base_query + " WHERE log_timestamp > %s ORDER BY log_timestamp ASC"
@@ -27,22 +38,20 @@ def get_data_trigger(mysql_client, last_timestamp):
     rows = cursor.fetchall()
     connection.commit()
 
-    schema = ["user_id", "login", "gravatar_id", "url", "avatar_url", "status", "log_timestamp"]
-    data = [dict(zip(schema, row)) for row in rows]
+    data = [dict(zip(columns, row)) for row in rows]
 
-    # Process each record with proper timestamp formatting
     for record in data:
-        if hasattr(record["log_timestamp"], 'strftime'):
-            record["formatted_timestamp"] = record["log_timestamp"].strftime('%Y-%m-%d %H:%M:%S.%f')
-        else:
-            record["formatted_timestamp"] = str(record["log_timestamp"])
+        for key, val in record.items():
+            if hasattr(val, 'strftime'):
+                record[key] = val.strftime('%Y-%m-%d %H:%M:%S.%f') if 'timestamp' in key else val.strftime(
+                    '%Y-%m-%d %H:%M:%S')
 
-    max_timestamp = max((row["log_timestamp"] for row in data), default=last_timestamp) if data else last_timestamp
-    return data, max_timestamp
+    max_ts = max((row["log_timestamp"] for row in data), default=last_timestamp) if data else last_timestamp
+    return data, max_ts
 
 
 def main():
-    last_timestamp = None
+    last_timestamps = {tbl: None for tbl in TABLE_CONFIGS.keys()}
     total_records_sent = 0
     batch_id = 1
     config = get_database_config()
@@ -50,65 +59,49 @@ def main():
     with MySQLConnect(config["mysql"].host, config["mysql"].port, config["mysql"].user,
                       config["mysql"].password) as mysql_client:
         producer = KafkaProducer(
-            bootstrap_servers="192.168.2.26:9092",
+            bootstrap_servers="localhost:9092",
             value_serializer=lambda x: json.dumps(x).encode('utf-8'),
             batch_size=16384,
             linger_ms=10
         )
 
-        print("Producer started...")
+        print("---- Starting Producer ----")
 
         while True:
             try:
-                data, max_timestamp = get_data_trigger(mysql_client, last_timestamp)
-                batch_records = 0
+                has_new_data = False
 
-                if data:
-                    print(f"Processing batch {batch_id} with {len(data)} records")
+                for table_name in TABLE_CONFIGS.keys():
+                    data, max_timestamp = get_data_trigger(mysql_client, table_name, last_timestamps[table_name])
 
-                for record in data:
-                    total_records_sent += 1
-                    batch_records += 1
+                    if data:
+                        has_new_data = True
+                        print(f"Processing batch {batch_id} with {len(data)} records")
 
-                    # Create enriched record with metadata
-                    enriched_record = {
-                        "user_id": record["user_id"],
-                        "login": record["login"],
-                        "gravatar_id": record.get("gravatar_id"),
-                        "url": record.get("url"),
-                        "avatar_url": record.get("avatar_url"),
-                        "status": record["status"],
-                        "log_timestamp": record["formatted_timestamp"],
-                        "count_number": total_records_sent,
-                        "batch_id": batch_id,
-                        "producer_timestamp": datetime.now().isoformat(),
-                        "record_version": "1.0"
-                    }
+                        for record in data:
+                            total_records_sent += 1
 
-                    producer.send("hoangduy", enriched_record)
-                    print(f"Sent record {total_records_sent}: user_id={record['user_id']}, status={record['status']}")
+                            enriched_record = record.copy()
+                            enriched_record["table_name"] = table_name
 
-                producer.flush()
+                            record_id = record.get("user_id") or record.get("repo_id") or record.get(
+                                "org_id") or record.get("event_id") or "unknown"
+                            enriched_record["message_id"] = f"{table_name}_{record_id}_{record.get('log_timestamp')}"
+                            enriched_record["producer_timestamp"] = datetime.now().isoformat()
 
-                if isinstance(max_timestamp, str):
-                    last_ts_str = max_timestamp
-                elif hasattr(max_timestamp, 'isoformat'):
-                    last_ts_str = max_timestamp.isoformat(sep=' ')
-                else:
-                    last_ts_str = str(max_timestamp)
+                            hash_input = json.dumps(enriched_record, sort_keys=True).encode('utf-8')
+                            enriched_record["hash"] = hashlib.sha256(hash_input).hexdigest()
 
-                print(f"BATCH {batch_id} SUMMARY:")
-                print(f"Last timestamp: {last_ts_str}")
-                print(f"Records in batch: {batch_records}")
-                print(f"Total records sent: {total_records_sent}")
+                            producer.send("hoangduy", enriched_record)
 
-                if batch_records > 0:
-                    print(f"Successfully sent {batch_records} records")
-                    batch_id += 1
-                else:
-                    print(f"   💤 No new records to send")
+                        producer.flush()
 
-                last_timestamp = max_timestamp
+                        last_timestamps[table_name] = max_timestamp
+                        batch_id += 1
+
+                if not has_new_data:
+                    pass
+
                 time.sleep(1)
 
             except KeyboardInterrupt:
